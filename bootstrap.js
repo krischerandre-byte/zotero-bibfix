@@ -6,12 +6,20 @@
 function install(data, reason) {}
 
 async function startup({ id, version, resourceURI, rootURI }, reason) {
+    Zotero.log("[BibFix] startup() called, rootURI=" + rootURI);
+
     // Load API modules
-    Services.scriptloader.loadSubScript(rootURI + "content/scripts/k10plus.js");
-    Services.scriptloader.loadSubScript(rootURI + "content/scripts/dnb.js");
-    Services.scriptloader.loadSubScript(rootURI + "content/scripts/crossref.js");
-    Services.scriptloader.loadSubScript(rootURI + "content/scripts/claude.js");
-    Services.scriptloader.loadSubScript(rootURI + "content/scripts/bibfix.js");
+    try {
+        Services.scriptloader.loadSubScript(rootURI + "content/scripts/k10plus.js");
+        Services.scriptloader.loadSubScript(rootURI + "content/scripts/dnb.js");
+        Services.scriptloader.loadSubScript(rootURI + "content/scripts/crossref.js");
+        Services.scriptloader.loadSubScript(rootURI + "content/scripts/claude.js");
+        Services.scriptloader.loadSubScript(rootURI + "content/scripts/bibfix.js");
+        Zotero.log("[BibFix] All scripts loaded successfully");
+    } catch (e) {
+        Zotero.log("[BibFix] ERROR loading scripts: " + e.message + "\n" + e.stack);
+        return;
+    }
 
     BibFix.init({ id, version, rootURI });
     BibFix.addToAllWindows();
@@ -24,6 +32,7 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
 }
 
 function onMainWindowLoad({ window }, reason) {
+    Zotero.log("[BibFix] onMainWindowLoad called");
     BibFix?.addToWindow(window);
 }
 

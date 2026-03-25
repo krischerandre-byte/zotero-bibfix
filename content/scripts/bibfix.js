@@ -14,13 +14,41 @@ var BibFix = {
         this.version = version;
         this.rootURI = rootURI;
         this.initialized = true;
-        Zotero.debug("[BibFix] Initialized v" + version);
+        Zotero.log("[BibFix] Initialized v" + version);
     },
 
     // ─── Window Management ────────────────────────────────────────
 
     addToWindow(window) {
+        Zotero.log("[BibFix] addToWindow called");
         let doc = window.document;
+
+        // Check if already added
+        if (doc.getElementById("bibfix-optimize-item")) {
+            Zotero.log("[BibFix] Menu items already exist, skipping");
+            return;
+        }
+
+        // Find the item context menu
+        let menu = doc.getElementById("zotero-itemmenu");
+        if (!menu) {
+            Zotero.log("[BibFix] ERROR: zotero-itemmenu not found!");
+            // Try alternative IDs
+            let allMenus = doc.querySelectorAll("menupopup");
+            Zotero.log("[BibFix] Available menupopups: " + allMenus.length);
+            for (let m of allMenus) {
+                if (m.id) Zotero.log("[BibFix]   menupopup id: " + m.id);
+            }
+            return;
+        }
+
+        Zotero.log("[BibFix] Found zotero-itemmenu, adding menu items");
+
+        // Separator
+        let sep = doc.createXULElement("menuseparator");
+        sep.id = "bibfix-separator";
+        menu.appendChild(sep);
+        this.addedElementIDs.push(sep.id);
 
         // Context menu: "Eintrag optimieren"
         let menuitem = doc.createXULElement("menuitem");
@@ -32,7 +60,7 @@ var BibFix = {
                 this.processItems(items, window);
             }
         });
-        doc.getElementById("zotero-itemmenu").appendChild(menuitem);
+        menu.appendChild(menuitem);
         this.addedElementIDs.push(menuitem.id);
 
         // Context menu: "Kurztitel generieren"
@@ -45,16 +73,10 @@ var BibFix = {
                 this.generateShortTitles(items, window);
             }
         });
-        doc.getElementById("zotero-itemmenu").appendChild(menuitem2);
+        menu.appendChild(menuitem2);
         this.addedElementIDs.push(menuitem2.id);
 
-        // Separator before our items
-        let sep = doc.createXULElement("menuseparator");
-        sep.id = "bibfix-separator";
-        let menu = doc.getElementById("zotero-itemmenu");
-        let firstBibfix = doc.getElementById("bibfix-optimize-item");
-        menu.insertBefore(sep, firstBibfix);
-        this.addedElementIDs.push(sep.id);
+        Zotero.log("[BibFix] Menu items added successfully");
     },
 
     removeFromWindow(window) {
@@ -65,8 +87,13 @@ var BibFix = {
     },
 
     addToAllWindows() {
-        for (let win of Zotero.getMainWindows()) {
-            if (!win.ZoteroPane) continue;
+        var wins = Zotero.getMainWindows();
+        Zotero.log("[BibFix] addToAllWindows: found " + wins.length + " windows");
+        for (let win of wins) {
+            if (!win.ZoteroPane) {
+                Zotero.log("[BibFix] Window has no ZoteroPane, skipping");
+                continue;
+            }
             this.addToWindow(win);
         }
     },
