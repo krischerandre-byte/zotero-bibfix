@@ -3,7 +3,7 @@
  * Structure follows zotero-format-metadata (Linter) pattern exactly
  */
 
-// ─── API Modules (inline to avoid loadSubScript issues) ──────────
+// --- API Modules (inline to avoid loadSubScript issues) ---
 
 var BibFixK10plus = {
     BASE_URL: "https://sru.k10plus.de/opac-de-627",
@@ -146,9 +146,9 @@ var BibFixClaude = {
         let prompt = `Du bist Experte für bibliografische Konventionen der deutschsprachigen Geschichtswissenschaft.
 Erzeuge einen Kurztitel für diesen Eintrag. REGELN:
 1. Nachname des Verfassers + Komma + 1-3 prägnante Titelwörter. Beispiel: "Seifert, Weltlicher Staat"
-2. KEINE Artikel am Anfang (Der/Die/Das/Ein/The). "Der Krieg in Bosnien" → "Krieg in Bosnien"
+2. KEINE Artikel am Anfang (Der/Die/Das/Ein/The). "Der Krieg in Bosnien" -> "Krieg in Bosnien"
 3. Eigennamen und Ortsnamen behalten.
-4. Ohne Verfasser: nur prägnante Titelwörter. "Hessische Landtagsakten" → "Hessische Landtagsakten"
+4. Ohne Verfasser: nur prägnante Titelwörter. "Hessische Landtagsakten" -> "Hessische Landtagsakten"
 5. Sammelbände: Herausgebernachname(n) + Titelwörter.
 EINTRAG: Typ: ${item.itemType}, Titel: ${item.title}, Verfasser: ${authors || "(keiner)"}, Hrsg.: ${editors || "(keiner)"}
 Antworte NUR mit dem Kurztitel.`;
@@ -180,7 +180,7 @@ KATALOG: ${JSON.stringify(found.slice(0, 3))}`;
     },
 };
 
-// ─── Main Plugin (registered as Zotero.BibFix) ──────────────────
+//
 
 console.log("[BibFix] Initializing ToolkitGlobal modules");
 
@@ -215,7 +215,7 @@ Zotero.BibFix = {
         },
     },
 
-    // ─── Menu Items ──────────────────────────────────────────────
+    //
 
     _addMenuItems(window) {
         let doc = window.document;
@@ -259,7 +259,7 @@ Zotero.BibFix = {
         }
     },
 
-    // ─── Processing ──────────────────────────────────────────────
+    //
 
     async processItems(items, window) {
         items = items.filter(i => i.isRegularItem());
@@ -309,7 +309,7 @@ Zotero.BibFix = {
         } catch (e) { pw.close(); window.alert("BibFix Fehler: " + e.message); }
     },
 
-    // ─── Analysis ────────────────────────────────────────────────
+    //
 
     async _analyzeItem(item) {
         let data = this._extractItemData(item);
@@ -407,16 +407,16 @@ Zotero.BibFix = {
         return { fields, creators: null, source: s };
     },
 
-    // ─── Preview (simple alert-based for now) ────────────────────
+    //
 
     _showPreviewAlert(allChanges, window) {
         let lines = [];
         for (let { item, changes } of allChanges) {
-            lines.push(`━━━ ${item.getField("title").substring(0, 60)} ━━━`);
+            lines.push(`--- ${item.getField("title").substring(0, 60)} ---`);
             lines.push(`Quelle: ${changes.source}`);
             for (let [field, ch] of Object.entries(changes.fields)) {
                 let label = { title: "Titel", shortTitle: "Kurztitel", date: "Jahr", place: "Ort", publisher: "Verlag", pages: "Seiten", volume: "Band", issue: "Heft", series: "Reihe", seriesNumber: "Reihennr.", edition: "Auflage", ISBN: "ISBN", DOI: "DOI", publicationTitle: "Zeitschrift", bookTitle: "Sammelband" }[field] || field;
-                lines.push(`  ${label}: "${ch.old || "(leer)}" → "${ch.new}"`);
+                lines.push(`  ${label}: "${ch.old || "(leer)}" -> "${ch.new}"`);
             }
             lines.push("");
         }
