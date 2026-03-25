@@ -1,5 +1,5 @@
-pref("extensions.bibfix.claudeApiKey", "");
-pref("extensions.bibfix.autoShortTitle", true);
-pref("extensions.bibfix.searchK10plus", true);
-pref("extensions.bibfix.searchDNB", true);
-pref("extensions.bibfix.searchCrossRef", true);
+pref("extensions.zotero.bibfix.claudeApiKey", "");
+pref("extensions.zotero.bibfix.autoShortTitle", true);
+pref("extensions.zotero.bibfix.searchK10plus", true);
+pref("extensions.zotero.bibfix.searchDNB", true);
+pref("extensions.zotero.bibfix.searchCrossRef", true);

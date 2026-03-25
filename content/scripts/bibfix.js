@@ -1,740 +1,441 @@
-/* BibFix – Main Plugin Logic */
+/**
+ * BibFix – Zotero Plugin for Bibliographic Metadata Optimization
+ * Structure follows zotero-format-metadata (Linter) pattern exactly
+ */
 
-var BibFix = {
-    id: null,
-    version: null,
-    rootURI: null,
-    initialized: false,
+// ─── API Modules (inline to avoid loadSubScript issues) ──────────
+
+var BibFixK10plus = {
+    BASE_URL: "https://sru.k10plus.de/opac-de-627",
+    async searchByISBN(isbn) {
+        return this._search(`pica.isb=${isbn.replace(/[-\s]/g, "")}`);
+    },
+    async searchByTitleAuthor(title, author) {
+        let parts = [];
+        if (title) parts.push(`pica.tit="${title.replace(/[:.!?]/g, "").split(/\s+/).slice(0, 5).join(" ")}"`);
+        if (author) parts.push(`pica.per="${author.split(",")[0].trim()}"`);
+        return parts.length ? this._search(parts.join(" and ")) : null;
+    },
+    async searchByDOI(doi) { return this._search(`pica.doi="${doi}"`); },
+    async _search(query) {
+        let url = `${this.BASE_URL}?version=1.1&operation=searchRetrieve&query=${encodeURIComponent(query)}&maximumRecords=5&recordSchema=marcxml`;
+        try {
+            let resp = await Zotero.HTTP.request("GET", url, { timeout: 15000, responseType: "text" });
+            return this._parseMARCXML(resp.responseText, "K10plus");
+        } catch (e) { Zotero.debug("[BibFix K10plus] " + e.message); return null; }
+    },
+    _parseMARCXML(xmlText, source) {
+        let parser = new DOMParser();
+        let doc = parser.parseFromString(xmlText, "text/xml");
+        let marcNS = "http://www.loc.gov/MARC21/slim";
+        let records = doc.getElementsByTagNameNS(marcNS, "record");
+        if (!records.length) return null;
+        let results = [];
+        for (let rec of records) { results.push(this._extractFields(rec, marcNS, source)); }
+        return results;
+    },
+    _extractFields(record, ns, source) {
+        let sf = (tag, code) => {
+            for (let f of record.getElementsByTagNameNS(ns, "datafield")) {
+                if (f.getAttribute("tag") === tag)
+                    for (let s of f.getElementsByTagNameNS(ns, "subfield"))
+                        if (s.getAttribute("code") === code) return s.textContent.trim();
+            }
+            return "";
+        };
+        let creators = [];
+        for (let tag of ["100", "700"]) {
+            for (let f of record.getElementsByTagNameNS(ns, "datafield")) {
+                if (f.getAttribute("tag") !== tag) continue;
+                let name = "", rel = "";
+                for (let s of f.getElementsByTagNameNS(ns, "subfield")) {
+                    if (s.getAttribute("code") === "a") name = s.textContent.trim();
+                    if (s.getAttribute("code") === "4" || s.getAttribute("code") === "e") rel = s.textContent.trim().toLowerCase();
+                }
+                if (name) {
+                    let p = name.split(",").map(s => s.trim());
+                    let type = (rel.includes("hrsg") || rel.includes("edt") || rel === "ed") ? "editor" : "author";
+                    creators.push({ lastName: p[0] || "", firstName: p[1] || "", creatorType: type });
+                }
+            }
+        }
+        let title = sf("245", "a").replace(/[\s/:]+$/, "");
+        let subtitle = sf("245", "b").replace(/[\s/:]+$/, "");
+        let place = (sf("264", "a") || sf("260", "a")).replace(/[\s:;,]+$/, "");
+        let publisher = (sf("264", "b") || sf("260", "b")).replace(/[\s:;,]+$/, "");
+        let dateRaw = sf("264", "c") || sf("260", "c");
+        return {
+            source, title: subtitle ? `${title}. ${subtitle}` : title, creators,
+            date: dateRaw.replace(/[^\d]/g, "").slice(0, 4), place, publisher,
+            series: sf("490", "a").replace(/[\s;,]+$/, ""), seriesNumber: sf("490", "v"),
+            edition: sf("250", "a"), isbn: sf("020", "a").split(/\s/)[0],
+            doi: sf("024", "a"), pages: sf("300", "a"),
+            hostTitle: sf("773", "t"), hostPages: sf("773", "g"),
+        };
+    },
+};
+
+var BibFixDNB = {
+    BASE_URL: "https://services.dnb.de/sru/dnb",
+    async searchByISBN(isbn) { return this._search(`num=${isbn.replace(/[-\s]/g, "")}`); },
+    async searchByTitleAuthor(title, author) {
+        let parts = [];
+        if (title) parts.push(`tit="${title.replace(/[:.!?]/g, "").split(/\s+/).slice(0, 4).join(" ")}"`);
+        if (author) parts.push(`per="${author.split(",")[0].trim()}"`);
+        return parts.length ? this._search(parts.join(" and ")) : null;
+    },
+    async _search(query) {
+        let url = `${this.BASE_URL}?version=1.1&operation=searchRetrieve&query=${encodeURIComponent(query)}&maximumRecords=5&recordSchema=MARC21-xml`;
+        try {
+            let resp = await Zotero.HTTP.request("GET", url, { timeout: 15000, responseType: "text" });
+            return BibFixK10plus._parseMARCXML(resp.responseText, "DNB");
+        } catch (e) { Zotero.debug("[BibFix DNB] " + e.message); return null; }
+    },
+};
+
+var BibFixCrossRef = {
+    BASE_URL: "https://api.crossref.org",
+    async searchByDOI(doi) {
+        if (!doi) return null;
+        try {
+            let resp = await Zotero.HTTP.request("GET", `${this.BASE_URL}/works/${encodeURIComponent(doi.trim())}`, {
+                headers: { "Accept": "application/json" }, timeout: 15000, responseType: "json",
+            });
+            return [this._map(resp.response.message)];
+        } catch (e) { return null; }
+    },
+    async searchByTitleAuthor(title, author) {
+        if (!title) return null;
+        let p = new URLSearchParams(); p.set("query.bibliographic", title);
+        if (author) p.set("query.author", author.split(",")[0].trim());
+        p.set("rows", "5");
+        try {
+            let resp = await Zotero.HTTP.request("GET", `${this.BASE_URL}/works?${p}`, {
+                headers: { "Accept": "application/json" }, timeout: 15000, responseType: "json",
+            });
+            return (resp.response.message.items || []).map(w => this._map(w));
+        } catch (e) { return null; }
+    },
+    _map(w) {
+        let creators = [];
+        if (w.author) for (let a of w.author) creators.push({ firstName: a.given || "", lastName: a.family || "", creatorType: "author" });
+        if (w.editor) for (let e of w.editor) creators.push({ firstName: e.given || "", lastName: e.family || "", creatorType: "editor" });
+        let title = Array.isArray(w.title) ? w.title[0] : (w.title || "");
+        let sub = w.subtitle ? (Array.isArray(w.subtitle) ? w.subtitle[0] : w.subtitle) : "";
+        let dp = w.issued?.["date-parts"]?.[0] || w.published?.["date-parts"]?.[0];
+        let ct = Array.isArray(w["container-title"]) ? w["container-title"][0] : (w["container-title"] || "");
+        return {
+            source: "CrossRef", title: sub ? `${title}. ${sub}` : title, creators,
+            date: dp ? String(dp[0]) : "", place: w["publisher-location"] || "",
+            publisher: w.publisher || "", series: "", seriesNumber: "",
+            edition: w.edition || "", isbn: w.ISBN?.[0] || "", doi: w.DOI || "",
+            pages: w.page || "", volume: w.volume || "", issue: w.issue || "",
+            containerTitle: ct, hostTitle: ct,
+        };
+    },
+};
+
+var BibFixClaude = {
+    API_URL: "https://api.anthropic.com/v1/messages",
+    _getApiKey() { return Zotero.Prefs.get("extensions.zotero.bibfix.claudeApiKey", true) || ""; },
+    async generateShortTitle(item) {
+        let apiKey = this._getApiKey();
+        if (!apiKey) return null;
+        let authors = (item.creators || []).filter(c => c.creatorType === "author").map(c => c.lastName).join(", ");
+        let editors = (item.creators || []).filter(c => c.creatorType === "editor").map(c => c.lastName).join(", ");
+        let prompt = `Du bist Experte für bibliografische Konventionen der deutschsprachigen Geschichtswissenschaft.
+Erzeuge einen Kurztitel für diesen Eintrag. REGELN:
+1. Nachname des Verfassers + Komma + 1-3 prägnante Titelwörter. Beispiel: "Seifert, Weltlicher Staat"
+2. KEINE Artikel am Anfang (Der/Die/Das/Ein/The). "Der Krieg in Bosnien" → "Krieg in Bosnien"
+3. Eigennamen und Ortsnamen behalten.
+4. Ohne Verfasser: nur prägnante Titelwörter. "Hessische Landtagsakten" → "Hessische Landtagsakten"
+5. Sammelbände: Herausgebernachname(n) + Titelwörter.
+EINTRAG: Typ: ${item.itemType}, Titel: ${item.title}, Verfasser: ${authors || "(keiner)"}, Hrsg.: ${editors || "(keiner)"}
+Antworte NUR mit dem Kurztitel.`;
+        try {
+            let resp = await Zotero.HTTP.request("POST", this.API_URL, {
+                headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+                body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 100, messages: [{ role: "user", content: prompt }] }),
+                timeout: 30000, responseType: "json",
+            });
+            return resp.response?.content?.[0]?.text?.trim() || null;
+        } catch (e) { Zotero.debug("[BibFix Claude] " + e.message); return null; }
+    },
+    async validateMetadata(existing, found) {
+        let apiKey = this._getApiKey();
+        if (!apiKey) return null;
+        let prompt = `Vergleiche diesen Zotero-Eintrag mit Katalogdaten. Antworte als JSON: {"bestMatchIndex":0,"confidence":"high|medium|low","corrections":{"field":"wert"},"notes":"..."}
+EINTRAG: ${JSON.stringify(existing)}
+KATALOG: ${JSON.stringify(found.slice(0, 3))}`;
+        try {
+            let resp = await Zotero.HTTP.request("POST", this.API_URL, {
+                headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+                body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
+                timeout: 45000, responseType: "json",
+            });
+            let text = resp.response?.content?.[0]?.text?.trim();
+            let m = text?.match(/\{[\s\S]*\}/);
+            return m ? JSON.parse(m[0]) : null;
+        } catch (e) { return null; }
+    },
+};
+
+// ─── Main Plugin (registered as Zotero.BibFix) ──────────────────
+
+console.log("[BibFix] Initializing ToolkitGlobal modules");
+
+Zotero.BibFix = {
     addedElementIDs: [],
-    _progressWindow: null,
+    rootURI: null,
 
-    init({ id, version, rootURI }) {
-        if (this.initialized) return;
-        this.id = id;
-        this.version = version;
-        this.rootURI = rootURI;
-        this.initialized = true;
-        console.log("[BibFix] Initialized v" + version);
+    hooks: {
+        async onStartup() {
+            console.log("[BibFix] onStartup");
+            Zotero.BibFix.rootURI = _globalThis.rootURI;
+
+            Zotero.PreferencePanes.register({
+                pluginID: "bibfix@zotero-plugin.org",
+                src: Zotero.BibFix.rootURI + "content/preferences.xhtml",
+                label: "BibFix",
+            });
+        },
+
+        onMainWindowLoad(window) {
+            console.log("[BibFix] onMainWindowLoad");
+            Zotero.BibFix._addMenuItems(window);
+        },
+
+        onMainWindowUnload(window) {
+            Zotero.BibFix._removeMenuItems(window);
+        },
+
+        onShutdown() {
+            console.log("[BibFix] onShutdown");
+            Zotero.BibFix = undefined;
+        },
     },
 
-    // ─── Window Management ────────────────────────────────────────
+    // ─── Menu Items ──────────────────────────────────────────────
 
-    addToWindow(window) {
-        console.log("[BibFix] addToWindow called");
+    _addMenuItems(window) {
         let doc = window.document;
+        if (doc.getElementById("bibfix-optimize-item")) return;
 
-        // Check if already added
-        if (doc.getElementById("bibfix-optimize-item")) {
-            console.log("[BibFix] Menu items already exist, skipping");
-            return;
-        }
-
-        // Find the item context menu
         let menu = doc.getElementById("zotero-itemmenu");
         if (!menu) {
-            console.log("[BibFix] ERROR: zotero-itemmenu not found!");
-            // Try alternative IDs
-            let allMenus = doc.querySelectorAll("menupopup");
-            console.log("[BibFix] Available menupopups: " + allMenus.length);
-            for (let m of allMenus) {
-                if (m.id) console.log("[BibFix]   menupopup id: " + m.id);
-            }
+            console.log("[BibFix] ERROR: zotero-itemmenu not found");
             return;
         }
 
-        console.log("[BibFix] Found zotero-itemmenu, adding menu items");
-
-        // Separator
         let sep = doc.createXULElement("menuseparator");
         sep.id = "bibfix-separator";
         menu.appendChild(sep);
-        this.addedElementIDs.push(sep.id);
 
-        // Context menu: "Eintrag optimieren"
-        let menuitem = doc.createXULElement("menuitem");
-        menuitem.id = "bibfix-optimize-item";
-        menuitem.setAttribute("label", "BibFix: Eintrag optimieren");
-        menuitem.addEventListener("command", () => {
+        let m1 = doc.createXULElement("menuitem");
+        m1.id = "bibfix-optimize-item";
+        m1.setAttribute("label", "BibFix: Eintrag optimieren");
+        m1.addEventListener("command", () => {
             let items = window.ZoteroPane.getSelectedItems();
-            if (items.length > 0) {
-                this.processItems(items, window);
-            }
+            if (items.length) Zotero.BibFix.processItems(items, window);
         });
-        menu.appendChild(menuitem);
-        this.addedElementIDs.push(menuitem.id);
+        menu.appendChild(m1);
 
-        // Context menu: "Kurztitel generieren"
-        let menuitem2 = doc.createXULElement("menuitem");
-        menuitem2.id = "bibfix-generate-shorttitle";
-        menuitem2.setAttribute("label", "BibFix: Kurztitel generieren");
-        menuitem2.addEventListener("command", () => {
+        let m2 = doc.createXULElement("menuitem");
+        m2.id = "bibfix-generate-shorttitle";
+        m2.setAttribute("label", "BibFix: Kurztitel generieren");
+        m2.addEventListener("command", () => {
             let items = window.ZoteroPane.getSelectedItems();
-            if (items.length > 0) {
-                this.generateShortTitles(items, window);
-            }
+            if (items.length) Zotero.BibFix.generateShortTitles(items, window);
         });
-        menu.appendChild(menuitem2);
-        this.addedElementIDs.push(menuitem2.id);
+        menu.appendChild(m2);
 
-        console.log("[BibFix] Menu items added successfully");
+        console.log("[BibFix] Menu items added");
     },
 
-    removeFromWindow(window) {
+    _removeMenuItems(window) {
         let doc = window.document;
-        for (let id of this.addedElementIDs) {
+        for (let id of ["bibfix-separator", "bibfix-optimize-item", "bibfix-generate-shorttitle"]) {
             doc.getElementById(id)?.remove();
         }
     },
 
-    addToAllWindows() {
-        var wins = Zotero.getMainWindows();
-        console.log("[BibFix] addToAllWindows: found " + wins.length + " windows");
-        for (let win of wins) {
-            if (!win.ZoteroPane) {
-                console.log("[BibFix] Window has no ZoteroPane, skipping");
-                continue;
-            }
-            this.addToWindow(win);
-        }
-    },
+    // ─── Processing ──────────────────────────────────────────────
 
-    removeFromAllWindows() {
-        for (let win of Zotero.getMainWindows()) {
-            if (!win.ZoteroPane) continue;
-            this.removeFromWindow(win);
-        }
-    },
-
-    // ─── Progress Indicator ───────────────────────────────────────
-
-    _showProgress(message, window) {
-        let pw = new Zotero.ProgressWindow({ closeOnClick: false });
-        pw.changeHeadline("BibFix");
-        pw.addDescription(message);
-        pw.show();
-        return pw;
-    },
-
-    _updateProgress(pw, message) {
-        if (pw) {
-            pw.addDescription(message);
-        }
-    },
-
-    // ─── Main Processing Pipeline ─────────────────────────────────
-
-    /**
-     * Process selected items: search catalogs, compare, show preview, apply
-     */
     async processItems(items, window) {
-        // Filter to regular items only (not attachments/notes)
-        items = items.filter(item => item.isRegularItem());
-        if (items.length === 0) {
-            window.alert("Keine bearbeitbaren Einträge ausgewählt.");
-            return;
-        }
+        items = items.filter(i => i.isRegularItem());
+        if (!items.length) { window.alert("Keine bearbeitbaren Einträge ausgewählt."); return; }
 
-        let pw = this._showProgress(`Verarbeite ${items.length} Eintrag/Einträge...`, window);
+        let pw = new Zotero.ProgressWindow({ closeOnClick: false });
+        pw.changeHeadline("BibFix"); pw.addDescription(`Verarbeite ${items.length} Einträge...`); pw.show();
 
         try {
             let allChanges = [];
-
             for (let i = 0; i < items.length; i++) {
                 let item = items[i];
-                let title = item.getField("title");
-                this._updateProgress(pw, `[${i + 1}/${items.length}] ${title.substring(0, 50)}...`);
-
+                pw.addDescription(`[${i + 1}/${items.length}] ${item.getField("title").substring(0, 50)}...`);
                 let changes = await this._analyzeItem(item);
-                if (changes && Object.keys(changes.fields).length > 0) {
-                    allChanges.push({ item, changes });
-                }
+                if (changes && Object.keys(changes.fields).length > 0) allChanges.push({ item, changes });
             }
-
             pw.close();
-
-            if (allChanges.length === 0) {
-                window.alert("Keine Verbesserungen gefunden. Alle Einträge scheinen vollständig.");
-                return;
-            }
-
-            // Show preview dialog
-            this._showPreviewDialog(allChanges, window);
-
-        } catch (e) {
-            pw.close();
-            Zotero.debug(`[BibFix] Error: ${e.message}\n${e.stack}`);
-            window.alert(`BibFix Fehler: ${e.message}`);
-        }
+            if (!allChanges.length) { window.alert("Keine Verbesserungen gefunden."); return; }
+            this._showPreviewAlert(allChanges, window);
+        } catch (e) { pw.close(); window.alert("BibFix Fehler: " + e.message); }
     },
 
-    /**
-     * Generate short titles only (without full metadata optimization)
-     */
     async generateShortTitles(items, window) {
-        items = items.filter(item => item.isRegularItem());
-        if (items.length === 0) return;
+        items = items.filter(i => i.isRegularItem());
+        if (!items.length) return;
+        let apiKey = Zotero.Prefs.get("extensions.zotero.bibfix.claudeApiKey", true);
+        if (!apiKey) { window.alert("Bitte Claude API Key in BibFix-Einstellungen eintragen."); return; }
 
-        let apiKey = Zotero.Prefs.get("extensions.bibfix.claudeApiKey", true);
-        if (!apiKey) {
-            window.alert("Bitte zuerst einen Claude API Key in den BibFix-Einstellungen hinterlegen.");
-            return;
-        }
-
-        let pw = this._showProgress(`Generiere Kurztitel für ${items.length} Einträge...`, window);
+        let pw = new Zotero.ProgressWindow({ closeOnClick: false });
+        pw.changeHeadline("BibFix"); pw.addDescription("Generiere Kurztitel..."); pw.show();
 
         try {
             let changes = [];
             for (let i = 0; i < items.length; i++) {
                 let item = items[i];
-                let title = item.getField("title");
                 let existing = item.getField("shortTitle");
-
-                this._updateProgress(pw, `[${i + 1}/${items.length}] ${title.substring(0, 50)}...`);
-
-                let itemData = this._extractItemData(item);
-                let shortTitle = await BibFixClaude.generateShortTitle(itemData);
-
+                let data = this._extractItemData(item);
+                pw.addDescription(`[${i + 1}/${items.length}] ${data.title.substring(0, 50)}...`);
+                let shortTitle = await BibFixClaude.generateShortTitle(data);
                 if (shortTitle && shortTitle !== existing) {
-                    changes.push({
-                        item,
-                        changes: {
-                            fields: { shortTitle: { old: existing, new: shortTitle } },
-                            creators: null,
-                            source: "Claude AI",
-                        },
-                    });
+                    changes.push({ item, changes: { fields: { shortTitle: { old: existing, new: shortTitle } }, creators: null, source: "Claude AI" } });
                 }
             }
-
             pw.close();
-
-            if (changes.length === 0) {
-                window.alert("Keine neuen Kurztitel generiert.");
-                return;
-            }
-
-            this._showPreviewDialog(changes, window);
-        } catch (e) {
-            pw.close();
-            window.alert(`BibFix Fehler: ${e.message}`);
-        }
+            if (!changes.length) { window.alert("Keine neuen Kurztitel generiert."); return; }
+            this._showPreviewAlert(changes, window);
+        } catch (e) { pw.close(); window.alert("BibFix Fehler: " + e.message); }
     },
 
-    // ─── Item Analysis ────────────────────────────────────────────
+    // ─── Analysis ────────────────────────────────────────────────
 
-    /**
-     * Analyze a single item: search catalogs, compare fields, return changes
-     */
     async _analyzeItem(item) {
-        let itemData = this._extractItemData(item);
-        let results = await this._searchCatalogs(itemData);
-
-        if (!results || results.length === 0) {
-            Zotero.debug(`[BibFix] No catalog results for: ${itemData.title}`);
-            // Still try to generate short title if missing
-            return this._buildChangesFromNothing(item, itemData);
-        }
-
-        // Use Claude to validate and pick best match (if API key available)
-        let apiKey = Zotero.Prefs.get("extensions.bibfix.claudeApiKey", true);
-        let bestMatch;
-        let claudeValidation = null;
-
-        if (apiKey) {
-            claudeValidation = await BibFixClaude.validateMetadata(itemData, results);
-        }
-
-        if (claudeValidation && claudeValidation.confidence !== "low") {
-            bestMatch = results[claudeValidation.bestMatchIndex || 0];
-            // Apply Claude's corrections on top
-            if (claudeValidation.corrections) {
-                for (let [field, value] of Object.entries(claudeValidation.corrections)) {
-                    if (value) bestMatch[field] = value;
-                }
+        let data = this._extractItemData(item);
+        let results = await this._searchCatalogs(data);
+        if (!results?.length) {
+            let fields = {};
+            let apiKey = Zotero.Prefs.get("extensions.zotero.bibfix.claudeApiKey", true);
+            if (apiKey && !data.shortTitle) {
+                let st = await BibFixClaude.generateShortTitle(data);
+                if (st) fields.shortTitle = { old: "", new: st };
             }
-        } else {
-            // Without Claude, use first result with highest field coverage
-            bestMatch = this._pickBestMatch(results, itemData);
+            return { fields, creators: null, source: "Claude AI" };
         }
-
-        if (!bestMatch) return null;
-
-        return this._compareAndBuildChanges(item, itemData, bestMatch);
+        let best = results[0];
+        let apiKey = Zotero.Prefs.get("extensions.zotero.bibfix.claudeApiKey", true);
+        if (apiKey) {
+            let v = await BibFixClaude.validateMetadata(data, results);
+            if (v?.confidence !== "low") {
+                best = results[v?.bestMatchIndex || 0] || best;
+                if (v?.corrections) for (let [k, val] of Object.entries(v.corrections)) if (val) best[k] = val;
+            }
+        }
+        return this._buildChanges(item, data, best);
     },
 
-    /**
-     * Extract current data from Zotero item into a plain object
-     */
     _extractItemData(item) {
         let creators = item.getCreators().map(c => ({
-            firstName: c.firstName || "",
-            lastName: c.lastName || "",
+            firstName: c.firstName || "", lastName: c.lastName || "",
             creatorType: Zotero.CreatorTypes.getName(c.creatorTypeID),
         }));
-
-        let data = {
+        let d = {
             itemType: Zotero.ItemTypes.getName(item.itemTypeID),
-            title: item.getField("title") || "",
-            shortTitle: item.getField("shortTitle") || "",
-            date: item.getField("date") || "",
-            creators,
-            place: item.getField("place") || "",
-            publisher: item.getField("publisher") || "",
-            isbn: item.getField("ISBN") || "",
-            doi: item.getField("DOI") || "",
-            pages: item.getField("pages") || "",
-            volume: "",
-            issue: "",
-            series: item.getField("series") || "",
-            seriesNumber: item.getField("seriesNumber") || "",
-            edition: item.getField("edition") || "",
-            publicationTitle: "",
+            title: item.getField("title") || "", shortTitle: item.getField("shortTitle") || "",
+            date: item.getField("date") || "", creators,
+            place: item.getField("place") || "", publisher: item.getField("publisher") || "",
+            isbn: item.getField("ISBN") || "", doi: item.getField("DOI") || "",
+            pages: item.getField("pages") || "", series: item.getField("series") || "",
+            seriesNumber: item.getField("seriesNumber") || "", edition: item.getField("edition") || "",
+            volume: "", issue: "", publicationTitle: "", bookTitle: "",
         };
-
-        // Fields that may not exist on all item types
-        try { data.volume = item.getField("volume") || ""; } catch (e) {}
-        try { data.issue = item.getField("issue") || ""; } catch (e) {}
-        try { data.publicationTitle = item.getField("publicationTitle") || ""; } catch (e) {}
-        try { data.bookTitle = item.getField("bookTitle") || ""; } catch (e) {}
-        try { data.numPages = item.getField("numPages") || ""; } catch (e) {}
-
-        return data;
+        try { d.volume = item.getField("volume") || ""; } catch (e) {}
+        try { d.issue = item.getField("issue") || ""; } catch (e) {}
+        try { d.publicationTitle = item.getField("publicationTitle") || ""; } catch (e) {}
+        try { d.bookTitle = item.getField("bookTitle") || ""; } catch (e) {}
+        return d;
     },
 
-    // ─── Catalog Search ───────────────────────────────────────────
+    async _searchCatalogs(data) {
+        let results = [], isbn = data.isbn, doi = data.doi, title = data.title;
+        let author = data.creators.find(c => c.creatorType === "author");
+        let name = author ? author.lastName : "";
+        let useK = Zotero.Prefs.get("extensions.zotero.bibfix.searchK10plus", true);
+        let useD = Zotero.Prefs.get("extensions.zotero.bibfix.searchDNB", true);
+        let useC = Zotero.Prefs.get("extensions.zotero.bibfix.searchCrossRef", true);
 
-    /**
-     * Search all enabled catalogs for metadata
-     */
-    async _searchCatalogs(itemData) {
-        let results = [];
-        let isbn = itemData.isbn;
-        let doi = itemData.doi;
-        let title = itemData.title;
-        let author = itemData.creators.find(c => c.creatorType === "author");
-        let authorName = author ? author.lastName : "";
-
-        let searchK10plus = Zotero.Prefs.get("extensions.bibfix.searchK10plus", true);
-        let searchDNB = Zotero.Prefs.get("extensions.bibfix.searchDNB", true);
-        let searchCrossRef = Zotero.Prefs.get("extensions.bibfix.searchCrossRef", true);
-
-        // Search by ISBN first (most reliable)
         if (isbn) {
-            let promises = [];
-            if (searchK10plus) promises.push(BibFixK10plus.searchByISBN(isbn));
-            if (searchDNB) promises.push(BibFixDNB.searchByISBN(isbn));
-            if (searchCrossRef) promises.push(BibFixCrossRef.searchByDOI(doi)); // DOI for CrossRef
-
-            let settled = await Promise.allSettled(promises);
-            for (let s of settled) {
-                if (s.status === "fulfilled" && s.value) {
-                    results.push(...s.value);
-                }
-            }
+            let p = [];
+            if (useK) p.push(BibFixK10plus.searchByISBN(isbn));
+            if (useD) p.push(BibFixDNB.searchByISBN(isbn));
+            for (let s of await Promise.allSettled(p)) if (s.status === "fulfilled" && s.value) results.push(...s.value);
         }
-
-        // Search by DOI (especially for journal articles)
-        if (doi && results.length === 0) {
-            let promises = [];
-            if (searchCrossRef) promises.push(BibFixCrossRef.searchByDOI(doi));
-            if (searchK10plus) promises.push(BibFixK10plus.searchByDOI(doi));
-
-            let settled = await Promise.allSettled(promises);
-            for (let s of settled) {
-                if (s.status === "fulfilled" && s.value) {
-                    results.push(...s.value);
-                }
-            }
+        if (doi && !results.length) {
+            let p = [];
+            if (useC) p.push(BibFixCrossRef.searchByDOI(doi));
+            for (let s of await Promise.allSettled(p)) if (s.status === "fulfilled" && s.value) results.push(...s.value);
         }
-
-        // Fallback: search by title + author
-        if (results.length === 0 && title) {
-            let promises = [];
-            if (searchK10plus) promises.push(BibFixK10plus.searchByTitleAuthor(title, authorName));
-            if (searchDNB) promises.push(BibFixDNB.searchByTitleAuthor(title, authorName));
-            if (searchCrossRef) promises.push(BibFixCrossRef.searchByTitleAuthor(title, authorName));
-
-            let settled = await Promise.allSettled(promises);
-            for (let s of settled) {
-                if (s.status === "fulfilled" && s.value) {
-                    results.push(...s.value);
-                }
-            }
+        if (!results.length && title) {
+            let p = [];
+            if (useK) p.push(BibFixK10plus.searchByTitleAuthor(title, name));
+            if (useD) p.push(BibFixDNB.searchByTitleAuthor(title, name));
+            if (useC) p.push(BibFixCrossRef.searchByTitleAuthor(title, name));
+            for (let s of await Promise.allSettled(p)) if (s.status === "fulfilled" && s.value) results.push(...s.value);
         }
-
-        Zotero.debug(`[BibFix] Found ${results.length} catalog results`);
         return results;
     },
 
-    // ─── Matching & Comparison ────────────────────────────────────
-
-    /**
-     * Pick the best match from catalog results based on field coverage
-     */
-    _pickBestMatch(results, itemData) {
-        if (!results || results.length === 0) return null;
-
-        let scored = results.map(r => {
-            let score = 0;
-            // Title similarity
-            if (r.title && this._similarStrings(r.title, itemData.title) > 0.5) score += 3;
-            // Has creators
-            if (r.creators && r.creators.length > 0) score += 2;
-            // Has date
-            if (r.date) score += 1;
-            // Has place
-            if (r.place) score += 1;
-            // Has pages
-            if (r.pages) score += 2;
-            // Has series
-            if (r.series) score += 1;
-            // Has edition
-            if (r.edition) score += 1;
-            // ISBN match
-            if (r.isbn && itemData.isbn &&
-                r.isbn.replace(/[-\s]/g, "") === itemData.isbn.replace(/[-\s]/g, "")) score += 5;
-            return { result: r, score };
-        });
-
-        scored.sort((a, b) => b.score - a.score);
-        return scored[0].result;
-    },
-
-    /**
-     * Simple string similarity (Jaccard on word sets)
-     */
-    _similarStrings(a, b) {
-        if (!a || !b) return 0;
-        let wordsA = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 2));
-        let wordsB = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 2));
-        let intersection = new Set([...wordsA].filter(w => wordsB.has(w)));
-        let union = new Set([...wordsA, ...wordsB]);
-        return union.size > 0 ? intersection.size / union.size : 0;
-    },
-
-    /**
-     * Compare existing item with best match and build change set
-     */
-    _compareAndBuildChanges(item, itemData, match) {
+    _buildChanges(item, data, match) {
         let fields = {};
-        let source = match.source || "Katalog";
-
-        // Title: prefer longer/more complete title
-        if (match.title && match.title.length > itemData.title.length + 3) {
-            fields.title = { old: itemData.title, new: match.title };
-        }
-
-        // Date
-        if (match.date && !itemData.date) {
-            fields.date = { old: itemData.date, new: match.date };
-        }
-
-        // Place
-        if (match.place && !itemData.place) {
-            fields.place = { old: itemData.place, new: match.place };
-        }
-
-        // Publisher
-        if (match.publisher && !itemData.publisher) {
-            fields.publisher = { old: itemData.publisher, new: match.publisher };
-        }
-
-        // Pages
-        if (match.pages && !itemData.pages) {
-            fields.pages = { old: itemData.pages, new: match.pages };
-        }
-
-        // Volume
-        if (match.volume && !itemData.volume) {
-            fields.volume = { old: itemData.volume, new: match.volume };
-        }
-
-        // Issue
-        if (match.issue && !itemData.issue) {
-            fields.issue = { old: itemData.issue, new: match.issue };
-        }
-
-        // Series
-        if (match.series && !itemData.series) {
-            fields.series = { old: itemData.series, new: match.series };
-        }
-
-        // Series number
-        if (match.seriesNumber && !itemData.seriesNumber) {
-            fields.seriesNumber = { old: itemData.seriesNumber, new: match.seriesNumber };
-        }
-
-        // Edition
-        if (match.edition && !itemData.edition) {
-            fields.edition = { old: itemData.edition, new: match.edition };
-        }
-
-        // ISBN
-        if (match.isbn && !itemData.isbn) {
-            fields.ISBN = { old: itemData.isbn, new: match.isbn };
-        }
-
-        // DOI
-        if (match.doi && !itemData.doi) {
-            fields.DOI = { old: itemData.doi, new: match.doi };
-        }
-
-        // Container title (journal/book for articles)
-        if (match.containerTitle || match.hostTitle) {
-            let ct = match.containerTitle || match.hostTitle;
-            if (itemData.itemType === "journalArticle" && !itemData.publicationTitle && ct) {
-                fields.publicationTitle = { old: itemData.publicationTitle, new: ct };
-            }
-            if (itemData.itemType === "bookSection" && !itemData.bookTitle && ct) {
-                fields.bookTitle = { old: itemData.bookTitle || "", new: ct };
-            }
-        }
-
-        // Creators: check for incomplete names (abbreviated first names)
-        let creatorChanges = null;
-        if (match.creators && match.creators.length > 0) {
-            creatorChanges = this._compareCreators(itemData.creators, match.creators);
-        }
-
-        return { fields, creators: creatorChanges, source };
+        let s = match.source || "Katalog";
+        if (match.title && match.title.length > data.title.length + 3) fields.title = { old: data.title, new: match.title };
+        if (match.date && !data.date) fields.date = { old: "", new: match.date };
+        if (match.place && !data.place) fields.place = { old: "", new: match.place };
+        if (match.publisher && !data.publisher) fields.publisher = { old: "", new: match.publisher };
+        if (match.pages && !data.pages) fields.pages = { old: "", new: match.pages };
+        if (match.volume && !data.volume) fields.volume = { old: "", new: match.volume };
+        if (match.issue && !data.issue) fields.issue = { old: "", new: match.issue };
+        if (match.series && !data.series) fields.series = { old: "", new: match.series };
+        if (match.seriesNumber && !data.seriesNumber) fields.seriesNumber = { old: "", new: match.seriesNumber };
+        if (match.edition && !data.edition) fields.edition = { old: "", new: match.edition };
+        if (match.isbn && !data.isbn) fields.ISBN = { old: "", new: match.isbn };
+        if (match.doi && !data.doi) fields.DOI = { old: "", new: match.doi };
+        let ct = match.containerTitle || match.hostTitle;
+        if (ct && data.itemType === "journalArticle" && !data.publicationTitle) fields.publicationTitle = { old: "", new: ct };
+        if (ct && data.itemType === "bookSection" && !data.bookTitle) fields.bookTitle = { old: "", new: ct };
+        return { fields, creators: null, source: s };
     },
 
-    /**
-     * Build minimal changes when no catalog results found (only short title)
-     */
-    async _buildChangesFromNothing(item, itemData) {
-        let fields = {};
-        let apiKey = Zotero.Prefs.get("extensions.bibfix.claudeApiKey", true);
-        let autoShortTitle = Zotero.Prefs.get("extensions.bibfix.autoShortTitle", true);
+    // ─── Preview (simple alert-based for now) ────────────────────
 
-        if (apiKey && autoShortTitle && !itemData.shortTitle) {
-            let shortTitle = await BibFixClaude.generateShortTitle(itemData);
-            if (shortTitle) {
-                fields.shortTitle = { old: "", new: shortTitle };
-            }
-        }
-
-        return { fields, creators: null, source: "Claude AI" };
-    },
-
-    /**
-     * Compare creator lists and find improvements
-     * (e.g., abbreviated first names → full first names)
-     */
-    _compareCreators(existing, found) {
-        if (!found || found.length === 0) return null;
-
-        let changes = [];
-        let existingByLast = {};
-        for (let c of existing) {
-            existingByLast[c.lastName.toLowerCase()] = c;
-        }
-
-        for (let fc of found) {
-            let key = fc.lastName.toLowerCase();
-            let ec = existingByLast[key];
-            if (ec) {
-                // Check if found name is more complete
-                if (fc.firstName && ec.firstName &&
-                    fc.firstName.length > ec.firstName.length &&
-                    !ec.firstName.includes(".") === false) {
-                    // Found name has abbreviated first name that is now expanded
-                    changes.push({
-                        old: `${ec.lastName}, ${ec.firstName}`,
-                        new: `${fc.lastName}, ${fc.firstName}`,
-                        creatorType: fc.creatorType || ec.creatorType,
-                    });
-                }
-                // Check if creator type differs (author vs editor)
-                if (fc.creatorType !== ec.creatorType) {
-                    changes.push({
-                        old: `${ec.lastName}, ${ec.firstName} (${ec.creatorType})`,
-                        new: `${fc.lastName}, ${fc.firstName} (${fc.creatorType})`,
-                        creatorType: fc.creatorType,
-                    });
-                }
-            } else if (fc.lastName) {
-                // Creator not in existing list → add
-                changes.push({
-                    old: "(fehlt)",
-                    new: `${fc.lastName}, ${fc.firstName} (${fc.creatorType})`,
-                    creatorType: fc.creatorType,
-                });
-            }
-        }
-
-        return changes.length > 0 ? changes : null;
-    },
-
-    // ─── Preview Dialog ───────────────────────────────────────────
-
-    /**
-     * Show a preview dialog with all proposed changes
-     */
-    _showPreviewDialog(allChanges, window) {
-        let doc = window.document;
-
-        // Build HTML content for the dialog
-        let html = this._buildPreviewHTML(allChanges);
-
-        // Open dialog
-        let dialog = window.openDialog(
-            this.rootURI + "content/preview.xhtml",
-            "bibfix-preview",
-            "chrome,centerscreen,resizable,dialog=yes,modal=yes",
-            { html, changes: allChanges, bibfix: this }
-        );
-    },
-
-    /**
-     * Build HTML preview of all changes
-     */
-    _buildPreviewHTML(allChanges) {
-        let parts = [];
-
+    _showPreviewAlert(allChanges, window) {
+        let lines = [];
         for (let { item, changes } of allChanges) {
-            let title = item.getField("title");
-            parts.push(`<div class="bibfix-item">
-                <h3>${this._escapeHTML(title)}</h3>
-                <p class="source">Quelle: ${this._escapeHTML(changes.source)}</p>`);
-
-            // Field changes
-            for (let [field, change] of Object.entries(changes.fields)) {
-                let label = this._fieldLabel(field);
-                parts.push(`<div class="bibfix-change">
-                    <label><input type="checkbox" checked data-item-id="${item.id}" data-field="${field}"/>
-                    <strong>${label}:</strong></label>
-                    <div class="old">${this._escapeHTML(change.old) || "<em>(leer)</em>"}</div>
-                    <div class="arrow">→</div>
-                    <div class="new">${this._escapeHTML(change.new)}</div>
-                </div>`);
+            lines.push(`━━━ ${item.getField("title").substring(0, 60)} ━━━`);
+            lines.push(`Quelle: ${changes.source}`);
+            for (let [field, ch] of Object.entries(changes.fields)) {
+                let label = { title: "Titel", shortTitle: "Kurztitel", date: "Jahr", place: "Ort", publisher: "Verlag", pages: "Seiten", volume: "Band", issue: "Heft", series: "Reihe", seriesNumber: "Reihennr.", edition: "Auflage", ISBN: "ISBN", DOI: "DOI", publicationTitle: "Zeitschrift", bookTitle: "Sammelband" }[field] || field;
+                lines.push(`  ${label}: "${ch.old || "(leer)}" → "${ch.new}"`);
             }
-
-            // Creator changes
-            if (changes.creators) {
-                for (let cc of changes.creators) {
-                    parts.push(`<div class="bibfix-change">
-                        <label><input type="checkbox" checked data-item-id="${item.id}" data-field="creator"/>
-                        <strong>Autor/Hrsg.:</strong></label>
-                        <div class="old">${this._escapeHTML(cc.old)}</div>
-                        <div class="arrow">→</div>
-                        <div class="new">${this._escapeHTML(cc.new)}</div>
-                    </div>`);
-                }
-            }
-
-            parts.push(`</div><hr/>`);
+            lines.push("");
         }
-
-        return parts.join("\n");
+        let msg = lines.join("\n");
+        let ok = Services.prompt.confirm(window, "BibFix – Änderungen übernehmen?", msg);
+        if (ok) {
+            this._applyChanges(allChanges);
+        }
     },
 
-    /**
-     * Apply selected changes to items
-     */
-    async applyChanges(allChanges, selectedFields) {
+    async _applyChanges(allChanges) {
         await Zotero.DB.executeTransaction(async () => {
             for (let { item, changes } of allChanges) {
-                let itemID = item.id;
-
-                for (let [field, change] of Object.entries(changes.fields)) {
-                    let key = `${itemID}:${field}`;
-                    if (!selectedFields || selectedFields.has(key)) {
-                        try {
-                            item.setField(field, change.new);
-                            Zotero.debug(`[BibFix] Set ${field} = "${change.new}" for item ${itemID}`);
-                        } catch (e) {
-                            Zotero.debug(`[BibFix] Could not set ${field}: ${e.message}`);
-                        }
-                    }
+                for (let [field, ch] of Object.entries(changes.fields)) {
+                    try { item.setField(field, ch.new); } catch (e) { Zotero.debug("[BibFix] " + e.message); }
                 }
-
-                // Apply creator changes
-                if (changes.creators) {
-                    let key = `${itemID}:creator`;
-                    if (!selectedFields || selectedFields.has(key)) {
-                        this._applyCreatorChanges(item, changes.creators);
-                    }
-                }
-
                 await item.save();
             }
         });
-
-        Zotero.debug("[BibFix] All changes applied.");
-    },
-
-    /**
-     * Apply creator changes to an item
-     */
-    _applyCreatorChanges(item, creatorChanges) {
-        let existingCreators = item.getCreators();
-        let updatedCreators = [...existingCreators];
-
-        for (let cc of creatorChanges) {
-            if (cc.old === "(fehlt)") {
-                // Add new creator
-                let parts = cc.new.match(/^(.+),\s*(.+?)\s*\((\w+)\)$/);
-                if (parts) {
-                    updatedCreators.push({
-                        lastName: parts[1],
-                        firstName: parts[2],
-                        creatorType: Zotero.CreatorTypes.getID(parts[3]),
-                    });
-                }
-            } else {
-                // Update existing creator
-                let newParts = cc.new.match(/^(.+),\s*(.+?)(?:\s*\((\w+)\))?$/);
-                if (newParts) {
-                    let idx = updatedCreators.findIndex(c =>
-                        c.lastName.toLowerCase() === newParts[1].toLowerCase().trim()
-                    );
-                    if (idx >= 0) {
-                        updatedCreators[idx] = {
-                            ...updatedCreators[idx],
-                            firstName: newParts[2].trim(),
-                            lastName: newParts[1].trim(),
-                        };
-                        if (newParts[3]) {
-                            updatedCreators[idx].creatorType = Zotero.CreatorTypes.getID(newParts[3]);
-                        }
-                    }
-                }
-            }
-        }
-
-        item.setCreators(updatedCreators);
-    },
-
-    // ─── Helpers ──────────────────────────────────────────────────
-
-    _fieldLabel(field) {
-        let labels = {
-            title: "Titel",
-            shortTitle: "Kurztitel",
-            date: "Datum/Jahr",
-            place: "Ort",
-            publisher: "Verlag",
-            pages: "Seiten",
-            volume: "Band",
-            issue: "Heft",
-            series: "Reihe",
-            seriesNumber: "Reihennummer",
-            edition: "Auflage",
-            ISBN: "ISBN",
-            DOI: "DOI",
-            publicationTitle: "Zeitschrift",
-            bookTitle: "Sammelband-Titel",
-            numPages: "Seitenzahl",
-        };
-        return labels[field] || field;
-    },
-
-    _escapeHTML(str) {
-        if (!str) return "";
-        return str.replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;");
+        console.log("[BibFix] Changes applied");
     },
 };
