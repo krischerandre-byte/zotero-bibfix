@@ -1,0 +1,159 @@
+<?xml version="1.0"?>
+<?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
+<!DOCTYPE window>
+<window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+        xmlns:html="http://www.w3.org/1999/xhtml"
+        title="BibFix – Vorschau der Änderungen"
+        width="750" height="600"
+        persist="screenX screenY width height">
+
+  <html:style>
+    .bibfix-container {
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      overflow-y: auto;
+      max-height: 480px;
+    }
+    .bibfix-item {
+      margin-bottom: 16px;
+    }
+    .bibfix-item h3 {
+      margin: 0 0 8px 0;
+      font-size: 14px;
+      color: #333;
+    }
+    .source {
+      font-size: 11px;
+      color: #888;
+      margin: 0 0 8px 0;
+    }
+    .bibfix-change {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 6px 0;
+      padding: 6px 8px;
+      background: #f8f8f8;
+      border-radius: 4px;
+    }
+    .bibfix-change label {
+      min-width: 160px;
+      font-weight: normal;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .bibfix-change strong {
+      font-size: 12px;
+    }
+    .old {
+      color: #c00;
+      text-decoration: line-through;
+      flex: 1;
+      word-break: break-word;
+    }
+    .arrow {
+      color: #666;
+      font-weight: bold;
+      padding: 0 4px;
+    }
+    .new {
+      color: #080;
+      font-weight: 500;
+      flex: 1;
+      word-break: break-word;
+    }
+    .bibfix-change em {
+      color: #999;
+      font-style: italic;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #ddd;
+      margin: 12px 0;
+    }
+    .button-bar {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 12px 16px;
+      border-top: 1px solid #ddd;
+    }
+    .select-bar {
+      display: flex;
+      gap: 12px;
+      padding: 8px 16px;
+      border-bottom: 1px solid #eee;
+      font-size: 12px;
+    }
+    .select-bar a {
+      color: #06c;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+  </html:style>
+
+  <vbox flex="1">
+    <html:div class="select-bar">
+      <html:a id="select-all" onclick="selectAll(true)">Alle auswählen</html:a>
+      <html:a id="select-none" onclick="selectAll(false)">Keine auswählen</html:a>
+    </html:div>
+
+    <html:div id="preview-content" class="bibfix-container">
+      <!-- Content injected via JS -->
+    </html:div>
+
+    <html:div class="button-bar">
+      <html:button id="btn-cancel" onclick="doCancel()">Abbrechen</html:button>
+      <html:button id="btn-apply" onclick="doApply()" style="font-weight: bold;">Ausgewählte Änderungen übernehmen</html:button>
+    </html:div>
+  </vbox>
+
+  <script type="application/javascript"><![CDATA[
+    var args = window.arguments[0];
+    var contentDiv = document.getElementById("preview-content");
+
+    // Inject the preview HTML
+    contentDiv.innerHTML = args.html;
+
+    function selectAll(checked) {
+      let boxes = contentDiv.querySelectorAll('input[type="checkbox"]');
+      for (let box of boxes) {
+        box.checked = checked;
+      }
+    }
+
+    function doCancel() {
+      window.close();
+    }
+
+    async function doApply() {
+      // Collect selected fields
+      let selected = new Set();
+      let boxes = contentDiv.querySelectorAll('input[type="checkbox"]:checked');
+      for (let box of boxes) {
+        let itemId = box.getAttribute("data-item-id");
+        let field = box.getAttribute("data-field");
+        selected.add(`${itemId}:${field}`);
+      }
+
+      if (selected.size === 0) {
+        window.close();
+        return;
+      }
+
+      // Apply changes via BibFix
+      try {
+        await args.bibfix.applyChanges(args.changes, selected);
+        // Show confirmation
+        let btn = document.getElementById("btn-apply");
+        btn.textContent = "✓ Änderungen übernommen!";
+        btn.disabled = true;
+        setTimeout(() => window.close(), 1200);
+      } catch (e) {
+        alert("Fehler beim Übernehmen: " + e.message);
+      }
+    }
+  ]]></script>
+</window>

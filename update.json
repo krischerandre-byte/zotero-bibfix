@@ -1,0 +1,17 @@
+{
+	"addons": {
+		"bibfix@zotero-plugin.org": {
+			"updates": [
+				{
+					"version": "0.1.0",
+					"update_link": "https://github.com/bibfix/zotero-bibfix/releases/download/v0.1.0/bibfix-0.1.0.xpi",
+					"applications": {
+						"zotero": {
+							"strict_min_version": "7.999"
+						}
+					}
+				}
+			]
+		}
+	}
+}

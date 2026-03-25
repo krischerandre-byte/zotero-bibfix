@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
+<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml">
+  <groupbox>
+    <label><html:h2>BibFix – Einstellungen</html:h2></label>
+
+    <hbox align="center">
+      <label value="Claude API Key:" style="min-width: 120px;"/>
+      <html:input type="password" id="bibfix-apikey"
+                  preference="extensions.bibfix.claudeApiKey"
+                  style="flex: 1; min-width: 300px;"/>
+    </hbox>
+
+    <separator class="thin"/>
+
+    <label><html:h3>Datenquellen</html:h3></label>
+
+    <checkbox preference="extensions.bibfix.searchK10plus"
+              label="K10plus/GVK (Gemeinsamer Verbundkatalog) durchsuchen"/>
+    <checkbox preference="extensions.bibfix.searchDNB"
+              label="Deutsche Nationalbibliothek (DNB) durchsuchen"/>
+    <checkbox preference="extensions.bibfix.searchCrossRef"
+              label="CrossRef durchsuchen (internationale Zeitschriften)"/>
+
+    <separator class="thin"/>
+
+    <label><html:h3>Kurztitel</html:h3></label>
+
+    <checkbox preference="extensions.bibfix.autoShortTitle"
+              label="Automatische Kurztitelgenerierung via Claude AI"/>
+  </groupbox>
+</vbox>
