@@ -3,11 +3,17 @@
  * Structure follows zotero-format-metadata (Linter) pattern exactly
  */
 
-// Sandbox globals: resolve Zotero and console from the global scope
-// (scripts loaded via loadSubScript run in a sandbox where globals aren't directly available)
-var Zotero = Components.classes["@zotero.org/Zotero;1"].getService(Components.interfaces.nsISupports).wrappedJSObject;
-var console = Zotero.getMainWindow()?.console || { log() {}, warn() {}, error() {} };
-var Services = globalThis.Services || Components.utils.import("resource://gre/modules/Services.jsm").Services;
+// Sandbox globals: resolve Zotero and console
+// Same approach as zotero-format-metadata (Linter) BasicTool.getZotero()
+var Zotero;
+if (typeof globalThis.Zotero !== "undefined") {
+    Zotero = globalThis.Zotero;
+} else {
+    let mod = ChromeUtils.importESModule("chrome://zotero/content/zotero.mjs");
+    Zotero = mod.Zotero;
+}
+var console = Zotero.getMainWindow()?.console || { log: function(){}, warn: function(){}, error: function(){} };
+var Services = globalThis.Services;
 
 // --- API Modules (inline to avoid loadSubScript issues) ---
 
