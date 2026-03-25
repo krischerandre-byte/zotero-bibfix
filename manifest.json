@@ -3,7 +3,7 @@
 	"name": "BibFix",
 	"version": "0.1.0",
 	"description": "Bibliographic data optimization for Zotero",
-	"homepage_url": "https://github.com/bibfix/zotero-bibfix",
+	"homepage_url": "https://github.com/krischerandre-byte/zotero-bibfix",
 	"author": "Andre Krischer",
 	"icons": {
 		"48": "content/icons/icon48.png",
@@ -12,6 +12,7 @@
 	"applications": {
 		"zotero": {
 			"id": "bibfix@zotero-plugin.org",
+			"update_url": "https://raw.githubusercontent.com/krischerandre-byte/zotero-bibfix/main/update.json",
 			"strict_min_version": "7.999",
 			"strict_max_version": "9.*"
 		}
