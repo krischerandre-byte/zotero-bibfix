@@ -14,35 +14,35 @@ var BibFix = {
         this.version = version;
         this.rootURI = rootURI;
         this.initialized = true;
-        Zotero.log("[BibFix] Initialized v" + version);
+        console.log("[BibFix] Initialized v" + version);
     },
 
     // ─── Window Management ────────────────────────────────────────
 
     addToWindow(window) {
-        Zotero.log("[BibFix] addToWindow called");
+        console.log("[BibFix] addToWindow called");
         let doc = window.document;
 
         // Check if already added
         if (doc.getElementById("bibfix-optimize-item")) {
-            Zotero.log("[BibFix] Menu items already exist, skipping");
+            console.log("[BibFix] Menu items already exist, skipping");
             return;
         }
 
         // Find the item context menu
         let menu = doc.getElementById("zotero-itemmenu");
         if (!menu) {
-            Zotero.log("[BibFix] ERROR: zotero-itemmenu not found!");
+            console.log("[BibFix] ERROR: zotero-itemmenu not found!");
             // Try alternative IDs
             let allMenus = doc.querySelectorAll("menupopup");
-            Zotero.log("[BibFix] Available menupopups: " + allMenus.length);
+            console.log("[BibFix] Available menupopups: " + allMenus.length);
             for (let m of allMenus) {
-                if (m.id) Zotero.log("[BibFix]   menupopup id: " + m.id);
+                if (m.id) console.log("[BibFix]   menupopup id: " + m.id);
             }
             return;
         }
 
-        Zotero.log("[BibFix] Found zotero-itemmenu, adding menu items");
+        console.log("[BibFix] Found zotero-itemmenu, adding menu items");
 
         // Separator
         let sep = doc.createXULElement("menuseparator");
@@ -76,7 +76,7 @@ var BibFix = {
         menu.appendChild(menuitem2);
         this.addedElementIDs.push(menuitem2.id);
 
-        Zotero.log("[BibFix] Menu items added successfully");
+        console.log("[BibFix] Menu items added successfully");
     },
 
     removeFromWindow(window) {
@@ -88,10 +88,10 @@ var BibFix = {
 
     addToAllWindows() {
         var wins = Zotero.getMainWindows();
-        Zotero.log("[BibFix] addToAllWindows: found " + wins.length + " windows");
+        console.log("[BibFix] addToAllWindows: found " + wins.length + " windows");
         for (let win of wins) {
             if (!win.ZoteroPane) {
-                Zotero.log("[BibFix] Window has no ZoteroPane, skipping");
+                console.log("[BibFix] Window has no ZoteroPane, skipping");
                 continue;
             }
             this.addToWindow(win);
